@@ -1,4 +1,4 @@
-set(CLIENT_SRC client/client.c)
+set(CLIENT_SRC client/client.c murmur3/murmur3.c)
 add_executable(client ${CLIENT_SRC})
 target_link_libraries(client LibreSSL::TLS)
 
