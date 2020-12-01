@@ -54,12 +54,46 @@ static void kidhandler(int signum) {
 
 int main(int argc,  char *argv[])
 {
+	struct sockaddr_in sockname, client;
+	char writebuf[80], readbuf[80], *ep;
+	struct sigaction sa;
+	int sd;
+	socklen_t clientlen;
+	u_short port;
+	pid_t pid;
+	u_long p;
+    int readlen, writelen;
+
     struct tls_config *config = NULL;
     struct tls *ctx, *cctx = NULL;
-
     uint8_t *mem;
     size_t memlen;
 
+	/*
+	 * first, figure out what port we will listen on - it should
+	 * be our first parameter.
+	 */
+
+	if (argc != 2)
+		usage();
+		errno = 0;
+        p = strtoul(argv[1], &ep, 10);
+        if (*argv[1] == '\0' || *ep != '\0') {
+		/* parameter wasn't a number, or was empty */
+		fprintf(stderr, "%s - not a number\n", argv[1]);
+		usage();
+	}
+        if ((errno == ERANGE && p == ULONG_MAX) || (p > USHRT_MAX)) {
+		/* It's a number, but it either can't fit in an unsigned
+		 * long, or is too big for an unsigned short
+		 */
+		fprintf(stderr, "%s - value out of range\n", argv[1]);
+		usage();
+	}
+	/* now safe to do this */
+	port = p;
+
+    // Initialize tls
     if (tls_init() != 0) 
         err(1, "tls_init:");
 
@@ -108,7 +142,7 @@ int main(int argc,  char *argv[])
     if (ctx == NULL)
         err(1, "tls_client:");
 
-    printf("Created client context.\n");
+    printf("Created server context.\n");
 
     // apply config to context
     if (tls_configure(ctx, config) != 0)
@@ -116,41 +150,6 @@ int main(int argc,  char *argv[])
 
     printf("Applied config to context.\n");
 
-// -------------------------------------------------------------------
-
-	struct sockaddr_in sockname, client;
-	char writebuf[80], readbuf[80], *ep;
-	struct sigaction sa;
-	int sd;
-	socklen_t clientlen;
-	u_short port;
-	pid_t pid;
-	u_long p;
-    int readlen, writelen;
-
-	/*
-	 * first, figure out what port we will listen on - it should
-	 * be our first parameter.
-	 */
-
-	if (argc != 2)
-		usage();
-		errno = 0;
-        p = strtoul(argv[1], &ep, 10);
-        if (*argv[1] == '\0' || *ep != '\0') {
-		/* parameter wasn't a number, or was empty */
-		fprintf(stderr, "%s - not a number\n", argv[1]);
-		usage();
-	}
-        if ((errno == ERANGE && p == ULONG_MAX) || (p > USHRT_MAX)) {
-		/* It's a number, but it either can't fit in an unsigned
-		 * long, or is too big for an unsigned short
-		 */
-		fprintf(stderr, "%s - value out of range\n", argv[1]);
-		usage();
-	}
-	/* now safe to do this */
-	port = p;
 
 	/* the message we send the client */
 	strlcpy(writebuf,
@@ -209,6 +208,10 @@ int main(int argc,  char *argv[])
 
         printf("Socket is now tls.\n");
 
+    // TODO: create bloom filter
+
+    // TODO: read blacklisted objects
+
 		/*
 		 * We fork child to deal with each connection, this way more
 		 * than one client can connect to us and get served at any one
@@ -220,6 +223,16 @@ int main(int argc,  char *argv[])
 		     err(1, "fork failed");
 
 		if(pid == 0) {
+            // TODO: wait for client handshake
+
+            // TODO: receive filename
+
+            // TODO: check if file is blacklisted using bloom filter, deny if blacklisted
+
+            // TODO: otherwise, check local cache for file
+
+            // TODO: if not in cache, set up TLS for server, request filename, store in cache, then read file and send to client
+
             writelen = tls_write(cctx, writebuf, sizeof(writebuf));
             if (readlen < 0)
                 err(1, "tls_read: %s", tls_error(cctx));
