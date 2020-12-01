@@ -30,7 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
+#include <tls.h>
 
 
 static void usage()
@@ -42,6 +42,62 @@ static void usage()
 
 int main(int argc, char *argv[])
 {
+    struct tls_config *config = NULL;
+    struct tls *ctx = NULL;
+
+    uint8_t *mem;
+    size_t mem_len;
+
+    if (tls_init() != 0) 
+        err(1, "tls_init:");
+
+    printf("TLS initialized.\n");
+    
+    // set config
+    config = tls_config_new();
+    if (config == NULL)
+        err(1, "tls_config_new:");
+
+    printf("Created new tls_config.\n");
+
+    // set root certificate
+    if (tls_config_set_ca_file(config, "../../certificates/root.pem") != 0)
+        err(1, "tls_config_set_ca_file:");
+
+    printf("Root certificate set.\n");
+
+    // client certificate
+    if (tls_config_set_cert_file(config, "../../certificates/client.crt") != 0)
+        err(1, "tls_config_set_cert_file:");
+    
+    printf("Client certificate set.\n");
+
+    if (tls_config_set_key_file(config, "../../certificates/client.key") != 0)
+        err(1, "tls_config_set_key_file:");
+
+    printf("Client private key set.\n");
+/*
+    mem = tls_load_file("../../certificates/client.crt", &memlen, NULL);
+    if (mem == NULL)
+        err(1, "tls_load_file(client):");
+
+    if (tls_config_set_cert_mem(config, mem, mem_len) != 0)
+        err(1, "tls_config_set_cert_mem:"); 
+*/
+    // client context
+    ctx = tls_client();
+    if (ctx == NULL)
+        err(1, "tls_client:");
+
+    printf("Created client context.\n");
+
+    // apply config to context
+    if (tls_configure(ctx, config) != 0)
+        err(1, "tls_configure: %s", tls_error(ctx));
+
+    printf("Applied config to context.\n");
+
+// ----------------------------------------------------------------
 	struct sockaddr_in server_sa;
 	char buffer[80], *ep;
 	size_t maxread;
@@ -49,6 +105,7 @@ int main(int argc, char *argv[])
 	u_short port;
 	u_long p;
 	int sd;
+    int readlen, writelen;
 
 	if (argc != 3)
 		usage();
@@ -90,6 +147,14 @@ int main(int argc, char *argv[])
 	    == -1)
 		err(1, "connect failed");
 
+    printf("Connected socket to a proxy.\n");
+
+    // Upgrade socket to tls
+    if (tls_connect_socket(ctx, sd, argv[2]) != 0)
+        err(1, "tls_connect_socket: %s", tls_error(ctx));
+
+    printf("Socket upgraded to tls connection.\n");
+
 	/*
 	 * finally, we are connected. find out what magnificent wisdom
 	 * our server is going to send to us - since we really don't know
@@ -103,24 +168,25 @@ int main(int argc, char *argv[])
 	 * we also make sure we handle EINTR in case we got interrupted
 	 * by a signal.
 	 */
-	r = -1;
-	rc = 0;
-	maxread = sizeof(buffer) - 1; /* leave room for a 0 byte */
-	while ((r != 0) && rc < maxread) {
-		r = read(sd, buffer + rc, maxread - rc);
-		if (r == -1) {
-			if (errno != EINTR)
-				err(1, "read failed");
-		} else
-			rc += r;
-	}
+    
+    // Read from server
+    readlen = tls_read(ctx, buffer, sizeof(buffer));
+    if (readlen < 0)
+        err(1, "tls_read: %s", tls_error(ctx));
 	/*
 	 * we must make absolutely sure buffer has a terminating 0 byte
 	 * if we are to use it as a C string
 	 */
-	buffer[rc] = '\0';
+	buffer[readlen] = '\0';
 
 	printf("Server sent:  %s",buffer);
+
+    if (tls_close(ctx) != 0)
+        err(1, "tls_close: %s", tls_error(ctx));
+    tls_free(ctx);
+    tls_config_free(config);
+
+    printf("Memory freed, exiting.\n");
 	close(sd);
 	return(0);
 }
