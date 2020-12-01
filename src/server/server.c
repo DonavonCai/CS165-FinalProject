@@ -66,8 +66,9 @@ int main(int argc,  char *argv[])
 
     struct tls_config *config = NULL;
     struct tls *ctx, *cctx = NULL;
-    uint8_t *mem;
-    size_t memlen;
+
+    int proxies[6];
+    int numProxies;
 
 	/*
 	 * first, figure out what port we will listen on - it should
@@ -107,35 +108,18 @@ int main(int argc,  char *argv[])
     printf("Created new tls_config.\n");
 
     // set root certificate
-    mem = tls_load_file("../../certificates/root.pem", &memlen, NULL);
-    if (mem == NULL)
-        err(1, "tls_load_file(root):");
-
-    if (tls_config_set_ca_mem(config, mem, memlen) != 0)
-        err(1, "tls_config_set_ca_mem:");
-
-    printf("Root certificate set.\n");
+    if (tls_config_set_ca_file(config, "../../certificates/root.pem") != 0)
+        err(1, "tls_config_set_ca_file:");
 
     // set server certificate
-    mem = tls_load_file("../../certificates/server.crt", &memlen, NULL);
-    if (mem == NULL)
-        err(1, "tls_load_file(server_cert):");
-
-    if (tls_config_set_cert_mem(config, mem, memlen) != 0)
-        err(1, "tls_config_set_cert_mem:");
-
-    printf("Proxy certificate set.\n");
+    if (tls_config_set_cert_file(config, "../../certificates/server.crt") != 0)
+        err(1, "tls_config_set_cert_file:");
 
     // set server private key
-    // specify password = 'proxy-server-pass' because we load a private key instead of a certificate
-    mem = tls_load_file("../../certificates/server.key", &memlen, "proxy-server-pass");
-    if (mem == NULL)
-        err(1, "tls_load_file(server_key):");
+    if (tls_config_set_key_file(config, "../../certificates/server.key") != 0)
+        err(1, "tls_config_set_key_file:");
 
-    if (tls_config_set_key_mem(config, mem, memlen) != 0)
-        err(1, "tls_config_set_key_mem:");
-
-    printf("Proxy private key set.\n");
+    printf("Set certificates and key.\n");
 
     // server context
     ctx = tls_server();
@@ -148,7 +132,7 @@ int main(int argc,  char *argv[])
     if (tls_configure(ctx, config) != 0)
         err(1, "tls_configure:");
 
-    printf("Applied config to context.\n");
+    printf("Applied config.\n");
 
 
 	/* the message we send the client */
@@ -195,7 +179,11 @@ int main(int argc,  char *argv[])
 	 * finally - the main loop.  accept connections and deal with 'em
 	 */
 	printf("Server up and listening for connections on port %u\n", port);
+    numProxies = 0;
 	for(;;) {
+        if (numProxies >= 6)
+            continue;
+
 		int clientsd;
 		clientlen = sizeof(&client);
 		clientsd = accept(sd, (struct sockaddr *)&client, &clientlen);
@@ -206,10 +194,11 @@ int main(int argc,  char *argv[])
         if (tls_accept_socket(ctx, &cctx, clientsd) != 0)
             err(1, "tls_accept_socket %s", tls_error(ctx));
 
+        numProxies++;
         printf("Socket is now tls.\n");
 
     // TODO: wait for proxy to initiate TLS
-
+    
     // TODO: receive filename from proxy
 
     // TODO: send file securely to proxy

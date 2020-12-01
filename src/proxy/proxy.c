@@ -66,8 +66,6 @@ int main(int argc,  char *argv[])
 
     struct tls_config *config = NULL;
     struct tls *ctx, *cctx = NULL;
-    uint8_t *mem;
-    size_t memlen;
 
 	/*
 	 * first, figure out what port we will listen on - it should
@@ -104,38 +102,21 @@ int main(int argc,  char *argv[])
     if (config == NULL)
         err(1, "tls_config_new:");
 
-    printf("Created new tls_config.\n");
+    printf("Created config.\n");
 
     // set root certificate
-    mem = tls_load_file("../../certificates/root.pem", &memlen, NULL);
-    if (mem == NULL)
-        err(1, "tls_load_file(root):");
-
-    if (tls_config_set_ca_mem(config, mem, memlen) != 0)
+    if (tls_config_set_ca_file(config, "../../certificates/root.pem") != 0)
         err(1, "tls_config_set_ca_mem:");
 
-    printf("Root certificate set.\n");
-
     // set server certificate
-    mem = tls_load_file("../../certificates/server.crt", &memlen, NULL);
-    if (mem == NULL)
-        err(1, "tls_load_file(server_cert):");
-
-    if (tls_config_set_cert_mem(config, mem, memlen) != 0)
-        err(1, "tls_config_set_cert_mem:");
-
-    printf("Proxy certificate set.\n");
+    if (tls_config_set_cert_file(config, "../../certificates/server.crt") != 0)
+        err(1, "tls_config_set_cert_file:");
 
     // set server private key
-    // specify password = 'proxy-server-pass' because we load a private key instead of a certificate
-    mem = tls_load_file("../../certificates/server.key", &memlen, "proxy-server-pass");
-    if (mem == NULL)
-        err(1, "tls_load_file(server_key):");
+    if (tls_config_set_key_file(config, "../../certificates/server.key") != 0)
+        err(1, "tls_config_set_key_file:");
 
-    if (tls_config_set_key_mem(config, mem, memlen) != 0)
-        err(1, "tls_config_set_key_mem:");
-
-    printf("Proxy private key set.\n");
+    printf("Certificates and key set.\n");
 
     // proxy context
     ctx = tls_server();
@@ -148,7 +129,7 @@ int main(int argc,  char *argv[])
     if (tls_configure(ctx, config) != 0)
         err(1, "tls_configure:");
 
-    printf("Applied config to context.\n");
+    printf("Applied config.\n");
 
 
 	/* the message we send the client */
