@@ -116,8 +116,6 @@ int main(int argc,  char *argv[])
 
     printf("Applied config to context.\n");
 
-
-// TODO: create and accept socket
 // -------------------------------------------------------------------
 
 	struct sockaddr_in sockname, client;

@@ -65,7 +65,7 @@ int main(int argc, char *argv[])
         err(1, "tls_config_set_ca_file:");
 
     printf("Root certificate set.\n");
-
+    /*
     // client certificate
     if (tls_config_set_cert_file(config, "../../certificates/client.crt") != 0)
         err(1, "tls_config_set_cert_file:");
@@ -76,14 +76,7 @@ int main(int argc, char *argv[])
         err(1, "tls_config_set_key_file:");
 
     printf("Client private key set.\n");
-/*
-    mem = tls_load_file("../../certificates/client.crt", &memlen, NULL);
-    if (mem == NULL)
-        err(1, "tls_load_file(client):");
-
-    if (tls_config_set_cert_mem(config, mem, mem_len) != 0)
-        err(1, "tls_config_set_cert_mem:"); 
-*/
+    */
     // client context
     ctx = tls_client();
     if (ctx == NULL)
@@ -150,7 +143,7 @@ int main(int argc, char *argv[])
     printf("Connected socket to a proxy.\n");
 
     // Upgrade socket to tls
-    if (tls_connect_socket(ctx, sd, argv[2]) != 0)
+    if (tls_connect_socket(ctx, sd, "localhost") != 0)
         err(1, "tls_connect_socket: %s", tls_error(ctx));
 
     printf("Socket upgraded to tls connection.\n");
