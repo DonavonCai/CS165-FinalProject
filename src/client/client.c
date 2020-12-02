@@ -41,8 +41,14 @@ static void usage()
 	exit(1);
 }
 
-void getIP(char* IPbuffer) {
-
+unsigned char isWhiteSpace(const char *s)
+{
+    while (*s) {
+        if (!isspace(*s))
+            return 0;
+        s++;
+    }
+    return 1;
 }
 
 int main(int argc, char *argv[])
@@ -51,28 +57,28 @@ int main(int argc, char *argv[])
 	struct sockaddr_in server_sa;
 	char buffer[80], *ep;
 	size_t maxread;
-	u_short port;
-	u_long p;
 	int sd;
-    int readlen, writelen;
+    ssize_t w, r;
 
     // tls
     struct tls_config *config = NULL;
     struct tls *ctx = NULL;
-    uint8_t *mem;
-    size_t mem_len;
 
-    // ip, port, proxyport, filename
+    // ip, port
     char hostbuffer[256];
     char *ip;
     struct hostent *host_entry; 
     int hostname;
+	u_short port;
+	u_long p;
 
-    char *proxyport;
-    char *filename;
+    // Objects from file
+    const int MAX_OBJLEN = 100;
+    char object[MAX_OBJLEN];
+    memset(object, '\0', sizeof(object));
 
     if (argc != 3)
-		usage();
+    	usage(); 
 
     // get IP address
     hostname = gethostname(hostbuffer, sizeof(hostbuffer)); 
@@ -92,7 +98,7 @@ int main(int argc, char *argv[])
 	/* now safe to do this */
 	port = p;
 
-    // Setup tls
+   // Setup tls
     if (tls_init() != 0) 
         err(1, "tls_init:");
 
@@ -122,7 +128,7 @@ int main(int argc, char *argv[])
     if (tls_configure(ctx, config) != 0)
         err(1, "tls_configure: %s", tls_error(ctx));
 
-    printf("Applied config to context.\n");	
+    printf("Applied config to context.\n");
 
 	// set up "server_sa" to be the location of the server
 	memset(&server_sa, 0, sizeof(server_sa));
@@ -151,42 +157,50 @@ int main(int argc, char *argv[])
 
     printf("Socket upgraded to tls connection.\n");
 
-
-    // TODO: read object names from file
-
-    // TODO: determine which proxy to ask for each object using Rendezvous hashing
-    
     // TODO: tls_handshake()
 
-    // TODO: send filename to proxy
-	/*
-	 * finally, we are connected. find out what magnificent wisdom
-	 * our server is going to send to us - since we really don't know
-	 * how much data the server could send to us, we have decided
-	 * we'll stop reading when either our buffer is full, or when
-	 * we get an end of file condition from the read when we read
-	 * 0 bytes - which means that we pretty much assume the server
-	 * is going to send us an entire message, then close the connection
-	 * to us, so that we see an end-of-file condition on the read.
-	 *
-	 * we also make sure we handle EINTR in case we got interrupted
-	 * by a signal.
-	 */
+    // Open file
+    FILE *fptr;
+    if ((fptr= fopen(argv[2], "r")) == NULL)
+        err(1, "fopen:");
+
+    // Main loop: read line from file
+    while (fgets(object, sizeof(object), fptr)) {
+        // ignore if whitespace
+        if (isWhiteSpace(object)) {
+            memset(object, '\0', sizeof(object));
+            break;
+        }
+        // null-terminate at last non-whitespace character
+        char *c;
+        c = object + strlen(object) - 1;
+        while (c > object && isspace(*c))
+            c = c - 1;
+        *(c+1) = '\0';
+     
+     
+        // TODO: determine which proxy to ask for each object using Rendezvous hashing
+
+        // send filename to proxy
+        w = tls_write(ctx, object, strlen(object));
+        if (w < 0)
+            err(1, "tls_write: %s", tls_error(ctx)); 
+
+        // display contents of requested file
+        maxread = sizeof(buffer) - 1;
+        r = tls_read(ctx, buffer, maxread);   
     
-    // Read from server
-    readlen = tls_read(ctx, buffer, sizeof(buffer));
-    if (readlen < 0)
-        err(1, "tls_read: %s", tls_error(ctx));
-	/*
-	 * we must make absolutely sure buffer has a terminating 0 byte
-	 * if we are to use it as a C string
-	 */
+        if (r < 0)
+            err(1, "tls_read: %s", tls_error(ctx));
 
-	buffer[readlen] = '\0';
+        buffer[r] = '\0';
+        printf("Server sent:  %s\n",buffer);
+    }
 
-    // TODO: display contents of requested file
-
-	printf("Server sent:  %s",buffer);
+    char done[9] = "__DONE__";
+    w = tls_write(ctx, done, sizeof(done));
+    if (w < 0)
+        err(1, "tls_write(done): %s", tls_error(ctx));
 
     if (tls_close(ctx) != 0)
         err(1, "tls_close: %s", tls_error(ctx));
@@ -195,5 +209,6 @@ int main(int argc, char *argv[])
 
     printf("Memory freed, exiting.\n");
 	close(sd);
-	return(0);
+
+	return 0;
 }
