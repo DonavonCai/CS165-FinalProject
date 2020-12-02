@@ -33,6 +33,7 @@
 #include <tls.h>
 
 #include <netdb.h>
+#include "../murmur3/murmur3.h"
 
 static void usage()
 {
@@ -140,11 +141,11 @@ int main(int argc, char *argv[])
 		usage();
 	}
 
-	/* ok now get a socket. we don't care where... */
+	// ok now get a socket. we don't care where... 
 	if ((sd=socket(AF_INET,SOCK_STREAM,0)) == -1)
 		err(1, "socket failed");
 
-	/* connect the socket to the server described in "server_sa" */
+	// connect the socket to the server described in "server_sa" 
 	if (connect(sd, (struct sockaddr *)&server_sa, sizeof(server_sa))
 	    == -1)
 		err(1, "connect failed");
@@ -177,9 +178,28 @@ int main(int argc, char *argv[])
         while (c > object && isspace(*c))
             c = c - 1;
         *(c+1) = '\0';
-     
-     
-        // TODO: determine which proxy to ask for each object using Rendezvous hashing
+          
+        // FIXME
+        //determine which proxy to ask for each object using Rendezvous hashing
+        char proxyNames[5][10] = { "p1", "p2", "p3", "p4", "p5" };//Assuming 5 proxies
+        int proxyChoices[100];//proxyChoice[i] will contain the index for the proxy to use for objectName[i]
+        for (int i = 0; objectNames[i][0]; ++i) {
+            char namesToHash[5][100];
+            uint32_t hashes[5];
+            uint32_t largestHashVal = 0;
+            unsigned char largestHashIndex = 0;
+            for (int j = 0; j < 5; ++j) {
+                strcpy(namesToHash[j], objectNames[i]);
+                strcat(namesToHash[j], proxyNames[j]);//Append proxy name to object name
+                MurmurHash3_x86_32 (namesToHash[j], sizeof(namesToHash[j]), 0, hashes + j);//hash the resulting string
+                if (hashes[j] > largestHashVal) {
+                    largestHashVal = hashes[j];//keep track of the largest hash
+                    largestHashIndex = j;
+                }
+            }
+            proxyChoices[i] = largestHashIndex;//choose the proxy that resulted in the largest hash value
+            printf("Object: %s, will be retrieved from proxy %d \n", objectNames[i], proxyChoices[i] + 1);
+        }
 
         // send filename to proxy
         w = tls_write(ctx, object, strlen(object));
