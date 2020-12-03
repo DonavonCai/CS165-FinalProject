@@ -178,29 +178,27 @@ int main(int argc, char *argv[])
         while (c > object && isspace(*c))
             c = c - 1;
         *(c+1) = '\0';
-          
-        // FIXME
+        
         //determine which proxy to ask for each object using Rendezvous hashing
         char proxyNames[5][10] = { "p1", "p2", "p3", "p4", "p5" };//Assuming 5 proxies
-        int proxyChoices[100];//proxyChoice[i] will contain the index for the proxy to use for objectName[i]
-        for (int i = 0; objectNames[i][0]; ++i) {
-            char namesToHash[5][100];
-            uint32_t hashes[5];
-            uint32_t largestHashVal = 0;
-            unsigned char largestHashIndex = 0;
-            for (int j = 0; j < 5; ++j) {
-                strcpy(namesToHash[j], objectNames[i]);
-                strcat(namesToHash[j], proxyNames[j]);//Append proxy name to object name
-                MurmurHash3_x86_32 (namesToHash[j], sizeof(namesToHash[j]), 0, hashes + j);//hash the resulting string
-                if (hashes[j] > largestHashVal) {
-                    largestHashVal = hashes[j];//keep track of the largest hash
-                    largestHashIndex = j;
-                }
+        int proxyChoice;//proxyChoice will contain the index for the proxy to use for object
+        
+        char namesToHash[5][100];
+        uint32_t hashes[5];
+        uint32_t largestHashVal = 0;
+        int largestHashIndex = 0;
+        for (int i = 0; i < 5; ++i) {
+            strcpy(namesToHash[i], object);
+            strcat(namesToHash[i], proxyNames[i]);//Append proxy name to object name
+            MurmurHash3_x86_32 (namesToHash[i], strlen(namesToHash[i]), 0, hashes + i);//hash the resulting string
+            if (hashes[i] > largestHashVal) {
+                largestHashVal = hashes[i];//keep track of the largest hash
+                largestHashIndex = i;
             }
-            proxyChoices[i] = largestHashIndex;//choose the proxy that resulted in the largest hash value
-            printf("Object: %s, will be retrieved from proxy %d \n", objectNames[i], proxyChoices[i] + 1);
+            proxyChoice = largestHashIndex;//choose the proxy that resulted in the largest hash value
         }
-
+		printf("Object: %s, will be retrieved from proxy %d \n", object, proxyChoice + 1);
+		
         // send filename to proxy
         w = tls_write(ctx, object, strlen(object));
         if (w < 0)
@@ -215,8 +213,8 @@ int main(int argc, char *argv[])
 
         buffer[r] = '\0';
         printf("Server sent:  %s\n",buffer);
+		
     }
-
     char done[9] = "__DONE__";
     w = tls_write(ctx, done, sizeof(done));
     if (w < 0)
