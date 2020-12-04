@@ -39,6 +39,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <tls.h>
+
 static void usage()
 {
 	extern char * __progname;
@@ -215,8 +217,8 @@ int main(int argc,  char *argv[])
             // TODO: if not in cache, set up TLS for server, request filename, store in cache, then read file and send to client
 
             writelen = tls_write(cctx, writebuf, sizeof(writebuf));
-            if (readlen < 0)
-                err(1, "tls_read: %s", tls_error(cctx));
+            if (writelen < 0)
+                err(1, "tls_write: %s", tls_error(cctx));
 
             if (tls_close(cctx) != 0)
                 err(1, "tls_close: %s", tls_error(cctx));
@@ -231,4 +233,5 @@ int main(int argc,  char *argv[])
 		}
 		close(clientsd);
 	}
+    return 0;
 }
