@@ -139,12 +139,6 @@ int main(int argc,  char *argv[])
 
     printf("Applied config.\n");
 
-
-	/* the message we send the client */
-	strlcpy(writebuf,
-	    "What is the air speed velocity of a coconut laden swallow?\n",
-	    sizeof(writebuf));
-
 	memset(&sockname, 0, sizeof(sockname));
 	sockname.sin_family = AF_INET;
 	sockname.sin_port = htons(port);
@@ -202,6 +196,7 @@ int main(int argc,  char *argv[])
 		     err(1, "fork failed");
 
 		if(pid == 0) {
+            // FIXME: server can't handle multiple requests from proxy?
             // convert socket to tls
             if (tls_accept_socket(ctx, &cctx, clientsd) != 0)
                 err(1, "tls_accept_socket %s", tls_error(ctx));
@@ -215,40 +210,48 @@ int main(int argc,  char *argv[])
             printf("Handshake completed\n");
 
             ssize_t w, r;
-            // Read filename from proxy.
-            maxread = sizeof(readbuf) - 1;
+            while (1) {
+                // FIXME: weird stuff is happening to the buffer
+                // Read filename from proxy.
+                maxread = sizeof(readbuf) - 1;
+                memset(readbuf, '\0', sizeof(readbuf));
+                r = tls_read(cctx, readbuf, maxread);
+                
+                if (r < 0)
+                    err(1, "tls_read: %s", tls_error(cctx));
+               
+                // null terminate buffer
+                readbuf[r] = '\0'; 
+                // Filename now in readbuf
 
-            r = tls_read(cctx, readbuf, maxread);
-            
-            if (r < 0)
-                err(1, "tls_read: %s", tls_error(cctx));
-           
-            // null terminate buffer
-            readbuf[r] = '\0';
-            // Filename now in readbuf
-            memset(writebuf, '\0', sizeof(writebuf));
-            strcpy(writebuf, "reply: contents of ");
-            strncat(writebuf, readbuf, sizeof(readbuf));
+                // if proxy says done, exit child process
+                if (strncmp(readbuf, "__DONE__", 8) == 0) {
+                    printf("done!\n");
+                    // clean up
+                    if (tls_close(cctx) != 0)
+                        err(1, "tls_close: %s", tls_error(cctx));
 
-            // Send contents of file to proxy.
-            w = tls_write(cctx, writebuf, strlen(writebuf));
-            
-            if (w < 0)
-                err(1, "tls_write: %s", tls_error(cctx));
+                    tls_free(cctx);
+                    tls_free(ctx);
+                    tls_config_free(config);
+                    close(clientsd);
+			        exit(0);                
+                }
 
-            printf("Sent contents of %s to proxy.\n", readbuf);
+                printf("request: %s\n", readbuf);
+
+                 // Send contents of file to proxy.
+                memset(writebuf, '\0', sizeof(writebuf));
+                strcpy(writebuf, "contents of ");
+                strncat(writebuf, readbuf, sizeof(readbuf));
+
+                printf("writebuf: %s\n", writebuf);
+                w = tls_write(cctx, writebuf, strlen(writebuf));
+                
+                if (w < 0)
+                    err(1, "tls_write: %s", tls_error(cctx));
+            }
         }
         close(clientsd);
     }
-    /*
-    if (tls_close(cctx) != 0)
-        err(1, "tls_close: %s", tls_error(cctx));
-    
-    tls_free(cctx);
-    tls_free(ctx);
-    tls_config_free(config);
-    close(clientsd);
-
-    exit(0);
-    */
 }

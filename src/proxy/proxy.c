@@ -40,11 +40,9 @@
 #include <string.h>
 #include <unistd.h>
 #include <tls.h>
-<<<<<<< HEAD
+
 #include <netdb.h>
-=======
 #include "../murmur3/murmur3.h"
->>>>>>> 137aefb8baf82f77c2dc15839ef53e4e99738bec
 
 static void usage()
 {
@@ -58,7 +56,6 @@ static void kidhandler(int signum) {
 	waitpid(WAIT_ANY, NULL, WNOHANG);
 }
 
-<<<<<<< HEAD
 u_long getPort(char *argPort) {
     u_long p;
     char *ep;
@@ -88,7 +85,7 @@ void getIp(char **ip) {
     host_entry = gethostbyname(hostbuffer);
     *ip = inet_ntoa(*((struct in_addr*) host_entry->h_addr_list[0]));
 }
-=======
+
 unsigned char isWhiteSpace(const char *s)
 {
     while (*s) {
@@ -101,7 +98,6 @@ unsigned char isWhiteSpace(const char *s)
 
 void insert_BF(unsigned char *bloomFilter, char* object, int BF_SIZE); //insert object into bloom filter
 int check_BF(unsigned char *bloomFilter, char* object, int BF_SIZE); //check if object is in bloom filter
->>>>>>> 137aefb8baf82f77c2dc15839ef53e4e99738bec
 
 int main(int argc,  char *argv[])
 {
@@ -271,7 +267,7 @@ int main(int argc,  char *argv[])
 	const int BLOOM_FILTER_SIZE = 7500;
 	unsigned char* bloomFilter;
 	bloomFilter = (unsigned char*) malloc(BLOOM_FILTER_SIZE);
-	for (int i = 0; i < BLOOM_FILTER_SIZE; ++i) {//Initialize bloom filter to all zeros
+	for (i = 0; i < BLOOM_FILTER_SIZE; ++i) {//Initialize bloom filter to all zeros
 		bloomFilter[i] = 0;
 	}
 	const int MAX_OBJLEN = 100;
@@ -298,7 +294,7 @@ int main(int argc,  char *argv[])
 		uint32_t hashes[5];
 		uint32_t largestHashVal = 0;
 		int largestHashIndex = 0;
-		for (int i = 0; i < 5; ++i) {
+		for (i = 0; i < 5; ++i) {
 			strcpy(namesToHash[i], object);
 			strcat(namesToHash[i], proxyNames[i]);//Append proxy name to object name
 			MurmurHash3_x86_32 (namesToHash[i], strlen(namesToHash[i]), 0, hashes + i);//hash the resulting string
@@ -355,22 +351,28 @@ int main(int argc,  char *argv[])
                 // wait to receive filename
                 readlen = tls_read(c_ctx, readbuf, sizeof(readbuf));
                 if (readlen < 0)
-                    err(1, "tls_read: %s", tls_error(c_ctx));
+                    err(1, "Proxy %d: tls_read(c_ctx): %s", proxyNum, tls_error(c_ctx));
 
-                readbuf[readlen] = '\0';
-                printf("Proxy %d : client wrote: %s\n", proxyNum, readbuf);
+                readbuf[readlen] = '\0'; 
 
                 // if client says done, exit
+                char done[9] = "__DONE__";
                 if (strncmp(readbuf, "__DONE__", 8) == 0) {
-                    if (tls_close(c_ctx) != 0)
-                    err(1, "Proxy %d : tls_close: %s", proxyNum, tls_error(c_ctx));
-
+                    // also tell server we are done
+                    writelen = tls_write(s_ctx, done, sizeof(done));
+                    if (writelen < 0)
+                        err(1, "tls_write: %s", tls_error(s_ctx));
+                    // clean up
+                    tls_free(s_ctx);
                     tls_free(c_ctx);
                     tls_free(ctx);
                     tls_config_free(config);
+                    tls_config_free(s_config);
                     close(clientsd);
 			        exit(0);                
                 }
+
+                printf("Proxy %d: client wants: %s\n", proxyNum, readbuf);
 
                 // TODO: check if file is blacklisted using bloom filter, deny if blacklisted
 
@@ -379,19 +381,20 @@ int main(int argc,  char *argv[])
                 /* TODO: if not in cache, set up TLS for server, request filename, 
                  * store in cache, then read file and send to client */
 
-                // FIXME: proxy 4 is not successfully sending
-                // maybe breaking due to multiple iterations?
+                // FIXME: proxy breaks on multiple object requests...
 
                 // forward the request to the main server
                 writelen = tls_write(s_ctx, readbuf, sizeof(readbuf));
                 if (writelen < 0)
                     err(1, "tls_write: %s", tls_error(s_ctx));
 
+                memset(readbuf, '\0', sizeof(readbuf));
                 // read the reply
                 readlen = tls_read(s_ctx, readbuf, sizeof(readbuf));
                 if (readlen < 0)
                     err(1, "tls_read: %s", tls_error(s_ctx));
 
+                printf("Proxy %d: server reply: %s\n", proxyNum, readbuf);
                 // then send forward the reply back to the client
                 writelen = tls_write(c_ctx, readbuf, sizeof(readbuf));
                 if (writelen < 0)
@@ -405,8 +408,8 @@ int main(int argc,  char *argv[])
 
 void insert_BF(unsigned char *bloomFilter, char* object, int BF_SIZE) {
 	uint32_t hashes[5];
-	int indexA, indexB;
-	for (int i = 0; i < 5; ++i) {
+	int indexA, indexB, i;
+	for (i = 0; i < 5; ++i) {
 		MurmurHash3_x86_32 (object, strlen(object), i, hashes + i);
 		indexA = (hashes[i] % (BF_SIZE * 8)) / 8;
 		indexB = (hashes[i] % (BF_SIZE * 8)) % 8;
@@ -417,8 +420,8 @@ void insert_BF(unsigned char *bloomFilter, char* object, int BF_SIZE) {
 
 int check_BF(unsigned char *bloomFilter, char* object, int BF_SIZE) {
 	uint32_t hashes[5];
-	int indexA, indexB;
-	for (int i = 0; i < 5; ++i) {
+	int indexA, indexB, i;
+	for (i = 0; i < 5; ++i) {
 		MurmurHash3_x86_32 (object, strlen(object), i, hashes + i);
 		indexA = (hashes[i] % (BF_SIZE * 8)) / 8;
 		indexB = (hashes[i] % (BF_SIZE * 8)) % 8;

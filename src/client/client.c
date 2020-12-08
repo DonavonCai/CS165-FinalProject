@@ -232,7 +232,7 @@ int main(int argc, char *argv[])
             }
             proxyChoice = largestHashIndex;//choose the proxy that resulted in the largest hash value
         }
-		printf("Get Object: %s / from Proxy: %d \n", object, proxyChoice + 1);
+		printf("Get Object: %s, From Proxy: %d \n", object, proxyChoice + 1);
 
         // send filename to proxy
         w = tls_write(proxies[proxyChoice], object, strlen(object));
@@ -241,13 +241,19 @@ int main(int argc, char *argv[])
 
         // display contents of requested file
         maxread = sizeof(buffer) - 1;
-        r = tls_read(proxies[proxyChoice], buffer, maxread);   
-    
-        if (r < 0)
-            err(1, "tls_read: %s", tls_error(proxies[proxyChoice]));
+        memset(buffer, '\0', sizeof(buffer));
+        
+        r = -1;
+        while (r <= 1) {
+            r = tls_read(proxies[proxyChoice], buffer, maxread);   
+
+            if (r < 0)
+                err(1, "tls_read: %s", tls_error(proxies[proxyChoice]));
+            //printf("R IS: %d\n", r);
+        }
 
         buffer[r] = '\0';
-        printf("Contents of %s: %s\n", object, buffer);
+        printf("Reply for %s: %s\n", object, buffer);
     }
     
     char done[9] = "__DONE__";
