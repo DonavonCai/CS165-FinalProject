@@ -253,7 +253,11 @@ int main(int argc, char *argv[])
         }
 
         buffer[r] = '\0';
-        printf("Reply for %s: %s\n", object, buffer);
+
+        if(strncmp(buffer, "__DENY__", 8) == 0)
+            printf("Object %s is forbidden\n", object);
+        else
+            printf("Reply for %s: %s\n", object, buffer);
     }
     
     char done[9] = "__DONE__";

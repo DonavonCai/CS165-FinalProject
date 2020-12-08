@@ -39,11 +39,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <tls.h>
 
 #include <netdb.h>
 #include "../murmur3/murmur3.h"
 
+
+// Function declaration:
 static void usage()
 {
 	extern char * __progname;
@@ -56,68 +59,189 @@ static void kidhandler(int signum) {
 	waitpid(WAIT_ANY, NULL, WNOHANG);
 }
 
-u_long getPort(char *argPort) {
-    u_long p;
-    char *ep;
-    p = strtoul(argPort, &ep, 10);
-    if (*argPort == '\0' || *ep != '\0') {
-		// parameter wasn't a number, or was empty
-		fprintf(stderr, "%s - not a number\n", argPort);
-		usage();
-	}
-    if ((errno == ERANGE && p == ULONG_MAX) || (p > USHRT_MAX)) {
-        /* It's a number, but it either can't fit in an unsigned
-		 * long, or is too big for an unsigned short
-		 */
-		fprintf(stderr, "%s - value out of range\n", argPort);
-		usage();
-	}
-	// now safe to do this
-	return p;
-}
+// given string, returns unsigned long port
+u_long getPort(char*);
 
-void getIp(char **ip) {
-    char hostbuffer[256];
-    struct hostent *host_entry;
-    char *temp;
-    int hostname;
-    hostname = gethostname(hostbuffer, sizeof(hostbuffer)); 
-    host_entry = gethostbyname(hostbuffer);
-    *ip = inet_ntoa(*((struct in_addr*) host_entry->h_addr_list[0]));
-}
+// gets ip of the host
+void getIp(char **);
 
-unsigned char isWhiteSpace(const char *s)
-{
-    while (*s) {
-        if (!isspace(*s))
-            return 0;
-        s++;
+// checks if given string is whitespace
+unsigned char isWhiteSpace(const char*);
+
+//insert object into bloom filter
+void insert_BF(unsigned char *bloomFilter, char* object, int BF_SIZE); 
+
+//check if object is in bloom filter
+int check_BF(unsigned char *bloomFilter, char* object, int BF_SIZE); 
+
+// thread for handling client requests
+void *clientThread();
+
+// index of object in cache, returns -1 if not present
+int cacheIndex(char*);
+
+// adds object to cache
+void addCache(char*, char*);
+
+// Global variables: ----------------------------------------------------------
+// fds, sockets, buffers:
+struct sockaddr_in sockname, client, server_sa;
+char buf[80];
+struct sigaction sa;
+int csd;
+socklen_t clientlen;
+pid_t pid;
+
+// ports:
+u_short server_port, port;
+char *ip;
+
+// tls:
+struct tls_config *config, *s_config = NULL;
+struct tls *ctx, *c_ctx, *s_ctx = NULL;
+int clientsd, serversd;
+
+// filestreams
+FILE *fptr;
+
+// forking, multithreading
+int proxyNum;
+pthread_mutex_t lock;
+
+// cache
+#define MAX_CACHE_SIZE  100
+#define MAX_OBJ_CONTENT_LEN  100
+#define MAX_OBJ_NAME_LEN 40
+
+struct cacheEntry {
+    char name[MAX_OBJ_NAME_LEN];
+    char content[MAX_OBJ_CONTENT_LEN];
+};
+
+struct cacheEntry cache[MAX_CACHE_SIZE];
+int numCacheItems;
+
+// bloom filter:
+const int BLOOM_FILTER_SIZE = 7500;
+unsigned char* bloomFilter;
+
+// iteration:
+int readlen, writelen;
+int i;
+
+// Client thread: ------------------------------------------------------
+void *clientThread() {
+    pthread_mutex_lock(&lock);
+
+    // thread local variables:
+    char objName[MAX_OBJ_NAME_LEN];
+    char objContent[MAX_OBJ_CONTENT_LEN];
+    int status;
+    char done[9] = "__DONE__";
+
+    // convert socket to tls
+    if (tls_accept_socket(ctx, &c_ctx, clientsd) != 0)
+        err(1, "tls_accept_socket %s", tls_error(ctx));
+
+    // handshake with client
+    status = tls_handshake(c_ctx);
+    if (status != 0)
+        err(1, "tls_handshake(c_ctx): %s", tls_error(c_ctx));
+    
+    printf("Proxy %d: Client handshake completed\n", proxyNum);
+
+    // handshake with server
+    status = tls_handshake(s_ctx);
+    if (status != 0)
+        err(1, "tls_handshake(s_ctx), Proxy %d: %s", tls_error(s_ctx), proxyNum);
+
+    printf("Proxy %d: Server handshake completed\n", proxyNum);
+    
+    // handle all of this client's requests
+    while (1) {
+        // wait to receive filename
+        readlen = tls_read(c_ctx, buf, sizeof(buf));
+        if (readlen < 0)
+            err(1, "Proxy %d: tls_read(c_ctx): %s", proxyNum, tls_error(c_ctx));
+
+        buf[readlen] = '\0';
+        strncpy(objName, buf, strlen(buf));
+
+        // if client says done, exit
+        if (strncmp(buf, "__DONE__", 8) == 0) {
+            // also tell server we are done
+            writelen = tls_write(s_ctx, done, sizeof(done));
+            if (writelen < 0)
+                err(1, "tls_write: %s", tls_error(s_ctx));
+
+            // exit thread
+            close(clientsd);
+            break;
+        }
+
+        printf("Proxy %d: client wants: %s\n", proxyNum, buf);
+
+        // Deny blacklisted objects
+        int forbidden;
+        forbidden = check_BF(bloomFilter, buf, BLOOM_FILTER_SIZE);
+        if (forbidden) {
+            char deny[9] = "__DENY__";
+            writelen = tls_write(c_ctx, deny, sizeof(deny));
+            continue;
+        }
+
+        // otherwise, check local cache for file:
+        // check cache
+        int cacheIdx;
+        cacheIdx = cacheIndex(buf);
+
+        // get from cache if found
+        if (cacheIdx > -1) {
+            strncpy(objContent, cache[cacheIdx].content, strlen(cache[cacheIdx].content));
+            
+            // null terminate
+            memset(buf, '\0', sizeof(buf));
+            // put the content in buffer
+            strncpy(buf, objContent, strlen(objContent));
+            
+            printf("Got %s from cache: %s\n", objName, objContent);
+        }
+        else {
+            // forward the request to the main server
+            writelen = tls_write(s_ctx, buf, sizeof(buf));
+            if (writelen < 0)
+                err(1, "tls_write: %s", tls_error(s_ctx));
+
+            // null terminate
+            memset(buf, '\0', sizeof(buf));
+            // read the reply into buffer
+            readlen = tls_read(s_ctx, buf, sizeof(buf));
+            if (readlen < 0)
+                err(1, "tls_read: %s", tls_error(s_ctx));
+
+            // cache the object
+            strncpy(objContent, buf, strlen(buf));
+            addCache(objName, objContent);
+            
+            printf("Proxy %d: server reply: %s\n", proxyNum, buf); 
+        }
+
+        // then send content to the client
+        writelen = tls_write(c_ctx, buf, sizeof(buf));
+        if (writelen < 0)
+            err(1, "tls_write: %s", tls_error(c_ctx));
     }
-    return 1;
+
+    pthread_mutex_unlock(&lock);
 }
 
-void insert_BF(unsigned char *bloomFilter, char* object, int BF_SIZE); //insert object into bloom filter
-int check_BF(unsigned char *bloomFilter, char* object, int BF_SIZE); //check if object is in bloom filter
-
+// Main: ------------------------------------------------------
 int main(int argc,  char *argv[])
 {
-	struct sockaddr_in sockname, client, server_sa;
-	char writebuf[80], readbuf[80];
-	struct sigaction sa;
-	int csd;
-	socklen_t clientlen;
-	u_short server_port, port;
-	pid_t pid;
-    int i;
-
-    struct tls_config *config, *s_config = NULL;
-    struct tls *ctx, *c_ctx, *s_ctx = NULL;
-    int clientsd, serversd;
-    char *ip;
-    int readlen, writelen;
-
-    int proxyNum;
-
+    // initialize mutex
+    if (pthread_mutex_init(&lock, NULL) != 0)
+        err(1, "pthread_mutex_init:");
+ 
 	/*
 	 * first, figure out what port we will listen on - it should
 	 * be our first parameter.
@@ -125,6 +249,14 @@ int main(int argc,  char *argv[])
 
 	if (argc != 3)
 		usage();
+
+    // initialize cache
+    numCacheItems = 0;
+    for (i = 0; i < MAX_CACHE_SIZE; i++) {
+        memset(cache[i].name, '\0', sizeof(cache[i].name));
+        memset(cache[i].content, '\0', sizeof(cache[i].content));
+    }
+    printf("cache initialized\n");
 
     // read port numbers from argv
     port = getPort(argv[1]);
@@ -178,9 +310,10 @@ int main(int argc,  char *argv[])
     if (tls_configure(s_ctx, s_config) != 0)
         err(1, "tls_configure(sctx): %s", tls_error(s_ctx));
     
+    printf("TLS configured\n");
+    // Begin execution ------------------------------------------------
     // get IP
     getIp(&ip);
-    printf("got ip\n");
 
     // set "server_sa" to be location of the server
     memset(&server_sa, 0, sizeof(server_sa));
@@ -259,13 +392,10 @@ int main(int argc,  char *argv[])
             err(1, "sigaction failed");
 
 	//Open black list
-	FILE *fptr;
 	if ((fptr= fopen("../../src/inputFiles/blacklistedObjects.txt", "r")) == NULL)
 		err(1, "fopen:");
 	
 	//Create Bloom Filter
-	const int BLOOM_FILTER_SIZE = 7500;
-	unsigned char* bloomFilter;
 	bloomFilter = (unsigned char*) malloc(BLOOM_FILTER_SIZE);
 	for (i = 0; i < BLOOM_FILTER_SIZE; ++i) {//Initialize bloom filter to all zeros
 		bloomFilter[i] = 0;
@@ -322,90 +452,13 @@ int main(int argc,  char *argv[])
 		if (clientsd == -1)
 			err(1, "accept failed");
     
-		pid = fork();
-		if (pid == -1)
-		     err(1, "fork failed");
-
-		if(pid == 0) {
-            // convert socket to tls
-            if (tls_accept_socket(ctx, &c_ctx, clientsd) != 0)
-                err(1, "tls_accept_socket %s", tls_error(ctx));
-
-            // handshake with client
-            int status;
-            status = tls_handshake(c_ctx);
-            if (status != 0)
-                err(1, "tls_handshake(c_ctx): %s", tls_error(c_ctx));
-            
-            printf("Proxy %d: Client handshake completed\n", proxyNum);
-
-            // handshake with server
-            status = tls_handshake(s_ctx);
-            if (status != 0)
-                err(1, "tls_handshake(s_ctx), Proxy %d: %s", tls_error(s_ctx), proxyNum);
-
-            printf("Proxy %d: Server handshake completed\n", proxyNum);
-            
-            // handle all of this client's requests
-            while (1) {
-                // wait to receive filename
-                readlen = tls_read(c_ctx, readbuf, sizeof(readbuf));
-                if (readlen < 0)
-                    err(1, "Proxy %d: tls_read(c_ctx): %s", proxyNum, tls_error(c_ctx));
-
-                readbuf[readlen] = '\0'; 
-
-                // if client says done, exit
-                char done[9] = "__DONE__";
-                if (strncmp(readbuf, "__DONE__", 8) == 0) {
-                    // also tell server we are done
-                    writelen = tls_write(s_ctx, done, sizeof(done));
-                    if (writelen < 0)
-                        err(1, "tls_write: %s", tls_error(s_ctx));
-                    // clean up
-                    tls_free(s_ctx);
-                    tls_free(c_ctx);
-                    tls_free(ctx);
-                    tls_config_free(config);
-                    tls_config_free(s_config);
-                    close(clientsd);
-			        exit(0);                
-                }
-
-                printf("Proxy %d: client wants: %s\n", proxyNum, readbuf);
-
-                // TODO: check if file is blacklisted using bloom filter, deny if blacklisted
-
-                // TODO: otherwise, check local cache for file
-
-                /* TODO: if not in cache, set up TLS for server, request filename, 
-                 * store in cache, then read file and send to client */
-
-                // FIXME: proxy breaks on multiple object requests...
-
-                // forward the request to the main server
-                writelen = tls_write(s_ctx, readbuf, sizeof(readbuf));
-                if (writelen < 0)
-                    err(1, "tls_write: %s", tls_error(s_ctx));
-
-                memset(readbuf, '\0', sizeof(readbuf));
-                // read the reply
-                readlen = tls_read(s_ctx, readbuf, sizeof(readbuf));
-                if (readlen < 0)
-                    err(1, "tls_read: %s", tls_error(s_ctx));
-
-                printf("Proxy %d: server reply: %s\n", proxyNum, readbuf);
-                // then send forward the reply back to the client
-                writelen = tls_write(c_ctx, readbuf, sizeof(readbuf));
-                if (writelen < 0)
-                    err(1, "tls_write: %s", tls_error(c_ctx));
-            }                
-		}
-        close(clientsd);
+        pthread_t tid;
+        pthread_create(&tid, NULL, clientThread, NULL);
 	}
     return 0;
 }
 
+// Bloom filter functions: ---------------------------------------------
 void insert_BF(unsigned char *bloomFilter, char* object, int BF_SIZE) {
 	uint32_t hashes[5];
 	int indexA, indexB, i;
@@ -430,4 +483,69 @@ int check_BF(unsigned char *bloomFilter, char* object, int BF_SIZE) {
 		}
 	}
 	return 1;
+}
+
+// Helper functions: ----------------------------------------------------
+int cacheIndex(char *requested) {
+    int j;
+    char cur[MAX_OBJ_NAME_LEN];
+
+    for (j = 0; j < MAX_CACHE_SIZE; j++) {
+        strncpy(cur, cache[j].name, strlen(cache[j].name));
+        if (strncmp(requested, cur, sizeof(requested)) == 0) {
+            return j;
+        }
+    }
+    return -1;
+}
+
+void addCache(char *name, char *content) {
+    if (numCacheItems >= MAX_CACHE_SIZE) {
+        printf("Cache is full, object not added\n");
+        return;
+    }
+
+    strncpy(cache[numCacheItems].name, name, strlen(name));
+    strncpy(cache[numCacheItems].content, content, strlen(content));
+    numCacheItems++;
+}
+
+unsigned char isWhiteSpace(const char *s)
+{
+    while (*s) {
+        if (!isspace(*s))
+            return 0;
+        s++;
+    }
+    return 1;
+}
+
+u_long getPort(char *argPort) {
+    u_long p;
+    char *ep;
+    p = strtoul(argPort, &ep, 10);
+    if (*argPort == '\0' || *ep != '\0') {
+		// parameter wasn't a number, or was empty
+		fprintf(stderr, "%s - not a number\n", argPort);
+		usage();
+	}
+    if ((errno == ERANGE && p == ULONG_MAX) || (p > USHRT_MAX)) {
+        /* It's a number, but it either can't fit in an unsigned
+		 * long, or is too big for an unsigned short
+		 */
+		fprintf(stderr, "%s - value out of range\n", argPort);
+		usage();
+	}
+	// now safe to do this
+	return p;
+}
+
+void getIp(char **ip) {
+    char hostbuffer[256];
+    struct hostent *host_entry;
+    char *temp;
+    int hostname;
+    hostname = gethostname(hostbuffer, sizeof(hostbuffer)); 
+    host_entry = gethostbyname(hostbuffer);
+    *ip = inet_ntoa(*((struct in_addr*) host_entry->h_addr_list[0]));
 }

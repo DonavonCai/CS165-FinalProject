@@ -196,7 +196,6 @@ int main(int argc,  char *argv[])
 		     err(1, "fork failed");
 
 		if(pid == 0) {
-            // FIXME: server can't handle multiple requests from proxy?
             // convert socket to tls
             if (tls_accept_socket(ctx, &cctx, clientsd) != 0)
                 err(1, "tls_accept_socket %s", tls_error(ctx));
@@ -211,7 +210,6 @@ int main(int argc,  char *argv[])
 
             ssize_t w, r;
             while (1) {
-                // FIXME: weird stuff is happening to the buffer
                 // Read filename from proxy.
                 maxread = sizeof(readbuf) - 1;
                 memset(readbuf, '\0', sizeof(readbuf));
