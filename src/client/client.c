@@ -31,7 +31,6 @@
 #include <string.h>
 #include <unistd.h>
 #include <tls.h>
-
 #include <netdb.h>
 #include "../murmur3/murmur3.h"
 
@@ -52,52 +51,89 @@ unsigned char isWhiteSpace(const char *s)
     return 1;
 }
 
+void getIp(char **ip) {
+    printf("get ip called\n");
+    char hostbuffer[256];
+    struct hostent *host_entry;
+    char *temp;
+    int hostname;
+    hostname = gethostname(hostbuffer, sizeof(hostbuffer)); 
+    host_entry = gethostbyname(hostbuffer);
+    printf("setting ip...\n");
+    *ip = inet_ntoa(*((struct in_addr*) host_entry->h_addr_list[0]));
+    printf("ip set\n");
+}
+
+u_long getPort(char *argPort) {
+    u_long p;
+    char *ep;
+    p = strtoul(argPort, &ep, 10);
+    if (*argPort == '\0' || *ep != '\0') {
+		// parameter wasn't a number, or was empty
+		fprintf(stderr, "%s - not a number\n", argPort);
+		usage();
+	}
+    if ((errno == ERANGE && p == ULONG_MAX) || (p > USHRT_MAX)) {
+        /* It's a number, but it either can't fit in an unsigned
+		 * long, or is too big for an unsigned short
+		 */
+		fprintf(stderr, "%s - value out of range\n", argPort);
+		usage();
+	}
+	// now safe to do this
+	return p;
+}
+
 int main(int argc, char *argv[])
 {
     // socket reading and writing
 	struct sockaddr_in server_sa;
-	char buffer[80], *ep;
+    struct sockaddr_in servers[5];
+	char buffer[80];
 	size_t maxread;
 	int sd;
     ssize_t w, r;
+    int sockets[5];
 
     // tls
     struct tls_config *config = NULL;
-    struct tls *ctx = NULL;
+    struct tls *proxies[5];
+    unsigned char completedHandshakes[5];
 
     // ip, port
-    char hostbuffer[256];
     char *ip;
-    struct hostent *host_entry; 
-    int hostname;
 	u_short port;
-	u_long p;
+    unsigned long int ports[5];
+
 
     // Objects from file
     const int MAX_OBJLEN = 100;
     char object[MAX_OBJLEN];
     memset(object, '\0', sizeof(object));
 
+    // Hashing
+    char proxyNames[5][10] = { "p1", "p2", "p3", "p4", "p5" };//Assuming 5 proxies
+    int proxyChoice;//proxyChoice will contain the index for the proxy to use for object
+    char namesToHash[5][100];
+    uint32_t hashes[5];
+    uint32_t largestHashVal = 0;
+    int largestHashIndex = 0;
+    int i;
+    
     if (argc != 3)
     	usage(); 
 
-    // get IP address
-    hostname = gethostname(hostbuffer, sizeof(hostbuffer)); 
-    host_entry = gethostbyname(hostbuffer);  
-    ip = inet_ntoa(*((struct in_addr*) host_entry->h_addr_list[0]));
+    // get ip
+    getIp(&ip);
 
     // get port
-    p = strtoul(argv[1], &ep, 10);
-    if (*argv[1] == '\0' || *ep != '\0') {
-		/* parameter wasn't a number, or was empty */
-		fprintf(stderr, "port: %s - not a number\n", argv[1]);
-	}
-    if ((errno == ERANGE && p == ULONG_MAX) || (p > USHRT_MAX)) {
-		fprintf(stderr, "port: %s - value out of range\n", argv[1]);
-		usage();
-	}
-	/* now safe to do this */
-	port = p;
+    port = getPort(argv[1]);
+
+    // NOTE: client expects each proxy's port to be 1 more than the last
+    // get 5 ports
+    for (i = 0; i < 5; i++) {
+        ports[i] = port + i;
+    }
 
    // Setup tls
     if (tls_init() != 0) 
@@ -119,46 +155,52 @@ int main(int argc, char *argv[])
     printf("Root certificate set.\n");
 
     // client context
-    ctx = tls_client();
-    if (ctx == NULL)
-        err(1, "tls_client:");
+    for (i = 0; i < 5; i++) {
+        proxies[i] = tls_client();
+        if (proxies[i] == NULL)
+            err(1, "tls_client:");
 
-    printf("Created client context.\n");
+        // apply config to context
+        if (tls_configure(proxies[i], config) != 0)
+            err(1, "tls_configure: %s", tls_error(proxies[i]));
 
-    // apply config to context
-    if (tls_configure(ctx, config) != 0)
-        err(1, "tls_configure: %s", tls_error(ctx));
+        completedHandshakes[i] = 0;
+     }
 
-    printf("Applied config to context.\n");
+    printf("Created 5 client contexts.\n");
+    
+    // 5 proxies
+    for (i = 0; i < 5; i++) {
+        memset(&servers[i], 0, sizeof(servers[i]));
+        servers[i].sin_family = AF_INET;
+        servers[i].sin_port = htons(ports[i]);
+        servers[i].sin_addr.s_addr = inet_addr(ip);
+        if (servers[i].sin_addr.s_addr == INADDR_NONE) {
+		    fprintf(stderr, "Invalid IP address %s\n", ip);
+		    usage();
+	    }
+    }
 
-	// set up "server_sa" to be the location of the server
-	memset(&server_sa, 0, sizeof(server_sa));
-	server_sa.sin_family = AF_INET;
-	server_sa.sin_port = htons(port);
-	server_sa.sin_addr.s_addr = inet_addr(ip);
-	if (server_sa.sin_addr.s_addr == INADDR_NONE) {
-		fprintf(stderr, "Invalid IP address %s\n", ip);
-		usage();
-	}
+    // get 5 sockets, upgrade to tls
+    for (i = 0; i < 5; i++) {
+        if ((sockets[i]=socket(AF_INET,SOCK_STREAM,0)) == -1)
+            err(1, "socket failed");
 
-	// ok now get a socket. we don't care where... 
-	if ((sd=socket(AF_INET,SOCK_STREAM,0)) == -1)
-		err(1, "socket failed");
+        // connect the socket to the server described in "server_sa" 
+        if (connect(sockets[i], (struct sockaddr *)&servers[i], sizeof(servers[i]))
+            == -1)
+            err(1, "connect failed");
 
-	// connect the socket to the server described in "server_sa" 
-	if (connect(sd, (struct sockaddr *)&server_sa, sizeof(server_sa))
-	    == -1)
-		err(1, "connect failed");
+        // Upgrade socket to tls
+        if (tls_connect_socket(proxies[i], sockets[i], "localhost") != 0)
+            err(1, "tls_connect_socket: %s", tls_error(proxies[i]));
 
-    printf("Connected socket to a proxy.\n");
-
-    // Upgrade socket to tls
-    if (tls_connect_socket(ctx, sd, "localhost") != 0)
-        err(1, "tls_connect_socket: %s", tls_error(ctx));
-
-    printf("Socket upgraded to tls connection.\n");
-
-    // TODO: tls_handshake()
+        // handshake
+        int status;
+        status = tls_handshake(proxies[i]);
+        if (status != 0)
+            err(1, "tls_handshake: %s", tls_error(proxies[i]));
+    }
 
     // Open file
     FILE *fptr;
@@ -179,15 +221,8 @@ int main(int argc, char *argv[])
             c = c - 1;
         *(c+1) = '\0';
         
-        //determine which proxy to ask for each object using Rendezvous hashing
-        char proxyNames[5][10] = { "p1", "p2", "p3", "p4", "p5" };//Assuming 5 proxies
-        int proxyChoice;//proxyChoice will contain the index for the proxy to use for object
-        
-        char namesToHash[5][100];
-        uint32_t hashes[5];
-        uint32_t largestHashVal = 0;
-        int largestHashIndex = 0;
-        for (int i = 0; i < 5; ++i) {
+        //determine which proxy to ask for each object using Rendezvous hashing 
+        for (i = 0; i < 5; ++i) {
             strcpy(namesToHash[i], object);
             strcat(namesToHash[i], proxyNames[i]);//Append proxy name to object name
             MurmurHash3_x86_32 (namesToHash[i], strlen(namesToHash[i]), 0, hashes + i);//hash the resulting string
@@ -197,36 +232,34 @@ int main(int argc, char *argv[])
             }
             proxyChoice = largestHashIndex;//choose the proxy that resulted in the largest hash value
         }
-		printf("Object: %s, will be retrieved from proxy %d \n", object, proxyChoice + 1);
-		
+		printf("Get Object: %s / from Proxy: %d \n", object, proxyChoice + 1);
+
         // send filename to proxy
-        w = tls_write(ctx, object, strlen(object));
+        w = tls_write(proxies[proxyChoice], object, strlen(object));
         if (w < 0)
-            err(1, "tls_write: %s", tls_error(ctx)); 
+            err(1, "tls_write: %s", tls_error(proxies[proxyChoice])); 
 
         // display contents of requested file
         maxread = sizeof(buffer) - 1;
-        r = tls_read(ctx, buffer, maxread);   
+        r = tls_read(proxies[proxyChoice], buffer, maxread);   
     
         if (r < 0)
-            err(1, "tls_read: %s", tls_error(ctx));
+            err(1, "tls_read: %s", tls_error(proxies[proxyChoice]));
 
         buffer[r] = '\0';
-        printf("Server sent:  %s\n",buffer);
-		
+        printf("Contents of %s: %s\n", object, buffer);
     }
+    
     char done[9] = "__DONE__";
-    w = tls_write(ctx, done, sizeof(done));
-    if (w < 0)
-        err(1, "tls_write(done): %s", tls_error(ctx));
+    for (i = 0; i < 5; i++) {
+        w = tls_write(proxies[i], done, sizeof(done));
+        if (w < 0)
+            err(1, "tls_write(done): %s", tls_error(proxies[i]));
+    
+        if (tls_close(proxies[i]) != 0)
+            err(1, "tls_close: %s", tls_error(proxies[i]));
 
-    if (tls_close(ctx) != 0)
-        err(1, "tls_close: %s", tls_error(ctx));
-    tls_free(ctx);
-    tls_config_free(config);
-
-    printf("Memory freed, exiting.\n");
-	close(sd);
-
+        close(sockets[i]);
+    }
 	return 0;
 }

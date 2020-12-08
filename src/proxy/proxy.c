@@ -25,6 +25,7 @@
  *
  */
 
+#include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
@@ -38,13 +39,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
 #include <tls.h>
+#include <netdb.h>
 
 static void usage()
 {
 	extern char * __progname;
-	fprintf(stderr, "usage: %s portnumber\n", __progname);
+	fprintf(stderr, "usage: %s proxyportnumber serverportnumber\n", __progname);
 	exit(1);
 }
 
@@ -53,58 +54,83 @@ static void kidhandler(int signum) {
 	waitpid(WAIT_ANY, NULL, WNOHANG);
 }
 
+u_long getPort(char *argPort) {
+    u_long p;
+    char *ep;
+    p = strtoul(argPort, &ep, 10);
+    if (*argPort == '\0' || *ep != '\0') {
+		// parameter wasn't a number, or was empty
+		fprintf(stderr, "%s - not a number\n", argPort);
+		usage();
+	}
+    if ((errno == ERANGE && p == ULONG_MAX) || (p > USHRT_MAX)) {
+        /* It's a number, but it either can't fit in an unsigned
+		 * long, or is too big for an unsigned short
+		 */
+		fprintf(stderr, "%s - value out of range\n", argPort);
+		usage();
+	}
+	// now safe to do this
+	return p;
+}
+
+void getIp(char **ip) {
+    char hostbuffer[256];
+    struct hostent *host_entry;
+    char *temp;
+    int hostname;
+    hostname = gethostname(hostbuffer, sizeof(hostbuffer)); 
+    host_entry = gethostbyname(hostbuffer);
+    *ip = inet_ntoa(*((struct in_addr*) host_entry->h_addr_list[0]));
+}
 
 int main(int argc,  char *argv[])
 {
-	struct sockaddr_in sockname, client;
-	char writebuf[80], readbuf[80], *ep;
+	struct sockaddr_in sockname, client, server_sa;
+	char writebuf[80], readbuf[80];
 	struct sigaction sa;
-	int sd;
+	int csd;
 	socklen_t clientlen;
-	u_short port;
+	u_short server_port, port;
 	pid_t pid;
-	u_long p;
+    int i;
+
+    struct tls_config *config, *s_config = NULL;
+    struct tls *ctx, *c_ctx, *s_ctx = NULL;
+    int clientsd, serversd;
+    char *ip;
     int readlen, writelen;
 
-    struct tls_config *config = NULL;
-    struct tls *ctx, *cctx = NULL;
+    int proxyNum;
 
 	/*
 	 * first, figure out what port we will listen on - it should
 	 * be our first parameter.
 	 */
 
-	if (argc != 2)
+	if (argc != 3)
 		usage();
-		errno = 0;
-        p = strtoul(argv[1], &ep, 10);
-        if (*argv[1] == '\0' || *ep != '\0') {
-		/* parameter wasn't a number, or was empty */
-		fprintf(stderr, "%s - not a number\n", argv[1]);
-		usage();
-	}
-        if ((errno == ERANGE && p == ULONG_MAX) || (p > USHRT_MAX)) {
-		/* It's a number, but it either can't fit in an unsigned
-		 * long, or is too big for an unsigned short
-		 */
-		fprintf(stderr, "%s - value out of range\n", argv[1]);
-		usage();
-	}
-	/* now safe to do this */
-	port = p;
+
+    // read port numbers from argv
+    port = getPort(argv[1]);
+    server_port = getPort(argv[2]);
 
     // Initialize tls
     if (tls_init() != 0) 
         err(1, "tls_init:");
 
     printf("TLS initialized.\n");
-    
-    // set config
+
+    // Configure as proxy ---------------------------------
+    // proxy context
+    ctx = tls_server();
+    if (ctx == NULL)
+        err(1, "tls_client:");
+
+    // proxy config
     config = tls_config_new();
     if (config == NULL)
         err(1, "tls_config_new:");
-
-    printf("Created config.\n");
 
     // set root certificate
     if (tls_config_set_ca_file(config, "../../certificates/root.pem") != 0)
@@ -118,43 +144,86 @@ int main(int argc,  char *argv[])
     if (tls_config_set_key_file(config, "../../certificates/server.key") != 0)
         err(1, "tls_config_set_key_file:");
 
-    printf("Certificates and key set.\n");
-
-    // proxy context
-    ctx = tls_server();
-    if (ctx == NULL)
-        err(1, "tls_client:");
-
-    printf("Created server context.\n");
-
     // apply config to context
     if (tls_configure(ctx, config) != 0)
         err(1, "tls_configure:");
 
-    printf("Applied config.\n");
+    // Configure as client ------------------------------------------
+    s_ctx = tls_client();
+    if (s_ctx == NULL)
+        err(1, "tls_client: %s", tls_error(s_ctx));
 
+    s_config = tls_config_new();
+    if (s_config == NULL)
+        err(1, "tls_config_new(s_config):");
 
-	/* the message we send the client */
-	strlcpy(writebuf,
-	    "What is the air speed velocity of a coconut laden swallow?\n",
-	    sizeof(writebuf));
+    if (tls_config_set_ca_file(s_config, "../../certificates/root.pem") != 0)
+        err(1, "tls_config_set_ca_file:");
 
+    if (tls_configure(s_ctx, s_config) != 0)
+        err(1, "tls_configure(sctx): %s", tls_error(s_ctx));
+    
+    // get IP
+    getIp(&ip);
+    printf("got ip\n");
+
+    // set "server_sa" to be location of the server
+    memset(&server_sa, 0, sizeof(server_sa));
+    server_sa.sin_family = AF_INET;
+    server_sa.sin_port = htons(server_port);
+    server_sa.sin_addr.s_addr = inet_addr(ip);
+    if (server_sa.sin_addr.s_addr == INADDR_NONE) {
+        fprintf(stderr, "Invalid IP address %s\n", ip);
+        usage();
+    }
+
+    /* 
+     * Create 4 more proxy servers listening on consecutive ports
+     * for a total of 5 servers
+     */
+
+    proxyNum = 1;
+    for (i = 1; i < 5; i++) {
+        pid = fork();
+        if (pid == 0) {
+            proxyNum += i;
+            port += i;
+            break;
+        }
+        else if (pid < 0) {
+            fprintf(stderr, "Fork failed.\n");
+        }
+    }
+
+    // get a socket
+    if ((serversd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+        err(1, "socket failed");
+
+    // connect to server
+    if (connect(serversd, (struct sockaddr *)&server_sa, sizeof(server_sa)) == -1)
+        err(1, "connect failed");
+ 
+    // upgrade to tls
+    if (tls_connect_socket(s_ctx, serversd, "localhost") != 0)
+        err(1, "tls_connect_socket: %s", tls_error(s_ctx));
+
+    // make csd listen for connections
 	memset(&sockname, 0, sizeof(sockname));
 	sockname.sin_family = AF_INET;
 	sockname.sin_port = htons(port);
 	sockname.sin_addr.s_addr = htonl(INADDR_ANY);
-	sd=socket(AF_INET,SOCK_STREAM,0);
-	if ( sd == -1)
+	csd=socket(AF_INET,SOCK_STREAM,0);
+	if ( csd == -1)
 		err(1, "socket failed");
 
-	if (bind(sd, (struct sockaddr *) &sockname, sizeof(sockname)) == -1)
+	if (bind(csd, (struct sockaddr *) &sockname, sizeof(sockname)) == -1)
 		err(1, "bind failed");
 
-	if (listen(sd,3) == -1)
+	if (listen(csd,3) == -1)
 		err(1, "listen failed");
 
 	/*
-	 * we're now bound, and listening for connections on "sd" -
+	 * we're now bound, and listening for connections on "csd" -
 	 * each call to "accept" will return us a descriptor talking to
 	 * a connected client
 	 */
@@ -170,68 +239,96 @@ int main(int argc,  char *argv[])
 	 * we want to allow system calls like accept to be restarted if they
 	 * get interrupted by a SIGCHLD
 	 */
-        sa.sa_flags = SA_RESTART;
-        if (sigaction(SIGCHLD, &sa, NULL) == -1)
-                err(1, "sigaction failed");
+    sa.sa_flags = SA_RESTART;
+    if (sigaction(SIGCHLD, &sa, NULL) == -1)
+            err(1, "sigaction failed");
 
 	/*
 	 * finally - the main loop.  accept connections and deal with 'em
 	 */
-	printf("Server up and listening for connections on port %u\n", port);
-	for(;;) {
-		int clientsd;
+	printf("Proxy %d connected to main server, now listening for connections on port %u\n", proxyNum, port);
+    for(;;) {
 		clientlen = sizeof(&client);
-		clientsd = accept(sd, (struct sockaddr *)&client, &clientlen);
+		clientsd = accept(csd, (struct sockaddr *)&client, &clientlen);
 		if (clientsd == -1)
 			err(1, "accept failed");
+    
+        // TODO: create bloom filter
 
-        // convert socket to tls
-        if (tls_accept_socket(ctx, &cctx, clientsd) != 0)
-            err(1, "tls_accept_socket %s", tls_error(ctx));
-
-        printf("Socket is now tls.\n");
-
-    // TODO: create bloom filter
-
-    // TODO: read blacklisted objects
-
-		/*
-		 * We fork child to deal with each connection, this way more
-		 * than one client can connect to us and get served at any one
-		 * time.
-		 */
-
+        // TODO: read blacklisted objects
 		pid = fork();
 		if (pid == -1)
 		     err(1, "fork failed");
 
 		if(pid == 0) {
-            // TODO: wait for client handshake
+            // convert socket to tls
+            if (tls_accept_socket(ctx, &c_ctx, clientsd) != 0)
+                err(1, "tls_accept_socket %s", tls_error(ctx));
 
-            // TODO: receive filename
-
-            // TODO: check if file is blacklisted using bloom filter, deny if blacklisted
-
-            // TODO: otherwise, check local cache for file
-
-            // TODO: if not in cache, set up TLS for server, request filename, store in cache, then read file and send to client
-
-            writelen = tls_write(cctx, writebuf, sizeof(writebuf));
-            if (writelen < 0)
-                err(1, "tls_write: %s", tls_error(cctx));
-
-            if (tls_close(cctx) != 0)
-                err(1, "tls_close: %s", tls_error(cctx));
+            // handshake with client
+            int status;
+            status = tls_handshake(c_ctx);
+            if (status != 0)
+                err(1, "tls_handshake(c_ctx): %s", tls_error(c_ctx));
             
-            tls_free(cctx);
-            tls_free(ctx);
-            tls_config_free(config);
-			close(clientsd);
+            printf("Proxy %d: Client handshake completed\n", proxyNum);
 
-            printf("Memory freed, exiting.\n");
-			exit(0);
+            // handshake with server
+            status = tls_handshake(s_ctx);
+            if (status != 0)
+                err(1, "tls_handshake(s_ctx), Proxy %d: %s", tls_error(s_ctx), proxyNum);
+
+            printf("Proxy %d: Server handshake completed\n", proxyNum);
+            
+            // handle all of this client's requests
+            while (1) {
+                // wait to receive filename
+                readlen = tls_read(c_ctx, readbuf, sizeof(readbuf));
+                if (readlen < 0)
+                    err(1, "tls_read: %s", tls_error(c_ctx));
+
+                readbuf[readlen] = '\0';
+                printf("Proxy %d : client wrote: %s\n", proxyNum, readbuf);
+
+                // if client says done, exit
+                if (strncmp(readbuf, "__DONE__", 8) == 0) {
+                    if (tls_close(c_ctx) != 0)
+                    err(1, "Proxy %d : tls_close: %s", proxyNum, tls_error(c_ctx));
+
+                    tls_free(c_ctx);
+                    tls_free(ctx);
+                    tls_config_free(config);
+                    close(clientsd);
+			        exit(0);                
+                }
+
+                // TODO: check if file is blacklisted using bloom filter, deny if blacklisted
+
+                // TODO: otherwise, check local cache for file
+
+                /* TODO: if not in cache, set up TLS for server, request filename, 
+                 * store in cache, then read file and send to client */
+
+                // FIXME: proxy 4 is not successfully sending
+                // maybe breaking due to multiple iterations?
+
+                // forward the request to the main server
+                writelen = tls_write(s_ctx, readbuf, sizeof(readbuf));
+                if (writelen < 0)
+                    err(1, "tls_write: %s", tls_error(s_ctx));
+
+                // read the reply
+                readlen = tls_read(s_ctx, readbuf, sizeof(readbuf));
+                if (readlen < 0)
+                    err(1, "tls_read: %s", tls_error(s_ctx));
+
+                // then send forward the reply back to the client
+                writelen = tls_write(c_ctx, readbuf, sizeof(readbuf));
+                if (writelen < 0)
+                    err(1, "tls_write: %s", tls_error(c_ctx));
+            }                
 		}
-		close(clientsd);
+        close(clientsd);
 	}
     return 0;
 }

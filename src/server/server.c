@@ -53,6 +53,25 @@ static void kidhandler(int signum) {
 	waitpid(WAIT_ANY, NULL, WNOHANG);
 }
 
+u_long getPort(char *argPort) {
+    u_long p;
+    char *ep;
+    p = strtoul(argPort, &ep, 10);
+    if (*argPort == '\0' || *ep != '\0') {
+		// parameter wasn't a number, or was empty
+		fprintf(stderr, "%s - not a number\n", argPort);
+		usage();
+	}
+    if ((errno == ERANGE && p == ULONG_MAX) || (p > USHRT_MAX)) {
+        /* It's a number, but it either can't fit in an unsigned
+		 * long, or is too big for an unsigned short
+		 */
+		fprintf(stderr, "%s - value out of range\n", argPort);
+		usage();
+	}
+	// now safe to do this
+	return p;
+}
 
 int main(int argc,  char *argv[])
 {
@@ -68,7 +87,6 @@ int main(int argc,  char *argv[])
 
     struct tls_config *config = NULL;
     struct tls *ctx, *cctx = NULL;
-    int numProxies;
 
 	/*
 	 * first, figure out what port we will listen on - it should
@@ -77,22 +95,9 @@ int main(int argc,  char *argv[])
 
 	if (argc != 2)
 		usage();
-		errno = 0;
-        p = strtoul(argv[1], &ep, 10);
-        if (*argv[1] == '\0' || *ep != '\0') {
-		/* parameter wasn't a number, or was empty */
-		fprintf(stderr, "%s - not a number\n", argv[1]);
-		usage();
-	}
-        if ((errno == ERANGE && p == ULONG_MAX) || (p > USHRT_MAX)) {
-		/* It's a number, but it either can't fit in an unsigned
-		 * long, or is too big for an unsigned short
-		 */
-		fprintf(stderr, "%s - value out of range\n", argv[1]);
-		usage();
-	}
-	/* now safe to do this */
-	port = p;
+
+    errno = 0;
+    port = getPort(argv[1]);
 
     // Initialize tls
     if (tls_init() != 0) 
@@ -179,23 +184,12 @@ int main(int argc,  char *argv[])
 	 * finally - the main loop.  accept connections and deal with 'em
 	 */
 	printf("Server up and listening for connections on port %u\n", port);
-    numProxies = 0;
 	for(;;) {
-        if (numProxies >= 6)
-            continue;
-
 		int clientsd;
 		clientlen = sizeof(&client);
 		clientsd = accept(sd, (struct sockaddr *)&client, &clientlen);
 		if (clientsd == -1)
 			err(1, "accept failed");
-
-        // convert socket to tls
-        if (tls_accept_socket(ctx, &cctx, clientsd) != 0)
-            err(1, "tls_accept_socket %s", tls_error(ctx));
-
-        numProxies++;
-        printf("Socket is now tls.\n");
 
 		/*
 		 * We fork child to deal with each connection, this way more
@@ -208,44 +202,53 @@ int main(int argc,  char *argv[])
 		     err(1, "fork failed");
 
 		if(pid == 0) {
+            // convert socket to tls
+            if (tls_accept_socket(ctx, &cctx, clientsd) != 0)
+                err(1, "tls_accept_socket %s", tls_error(ctx));
+            
+            // Wait for handshake from proxy
+            int status;
+            status = tls_handshake(cctx);
+            if (status != 0)
+                err(1, "tls_handshake(cctx): %s", tls_error(cctx));
+            
+            printf("Handshake completed\n");
+
             ssize_t w, r;
-            while (1) {
-                // Read filename from proxy.
-                maxread = sizeof(readbuf) - 1;
+            // Read filename from proxy.
+            maxread = sizeof(readbuf) - 1;
 
-                r = tls_read(cctx, readbuf, maxread);
-                
-                if (r < 0)
-                    err(1, "tls_read: %s", tls_error(cctx));
-               
-                if (strncmp(readbuf, "__DONE__", 8) == 0)
-                    break;
+            r = tls_read(cctx, readbuf, maxread);
+            
+            if (r < 0)
+                err(1, "tls_read: %s", tls_error(cctx));
+           
+            // null terminate buffer
+            readbuf[r] = '\0';
+            // Filename now in readbuf
+            memset(writebuf, '\0', sizeof(writebuf));
+            strcpy(writebuf, "reply: contents of ");
+            strncat(writebuf, readbuf, sizeof(readbuf));
 
-                // null terminate buffer
-                readbuf[r] = '\0';
-                // Filename now in readbuf
-                printf("request for: %s\n", readbuf);
-                memset(writebuf, '\0', sizeof(writebuf));
-                strcpy(writebuf, "reply: contents of ");
-                strncat(writebuf, readbuf, sizeof(readbuf));
+            // Send contents of file to proxy.
+            w = tls_write(cctx, writebuf, strlen(writebuf));
+            
+            if (w < 0)
+                err(1, "tls_write: %s", tls_error(cctx));
 
-                // Send contents of file to proxy.
-                w = tls_write(cctx, writebuf, strlen(writebuf));
-                
-                if (w < 0)
-                    err(1, "tls_write: %s", tls_error(cctx));
-
-                printf("Sent contents of %s to proxy.\n", readbuf);
-		    }
+            printf("Sent contents of %s to proxy.\n", readbuf);
         }
-        if (tls_close(cctx) != 0)
-            err(1, "tls_close: %s", tls_error(cctx));
-        
-        tls_free(cctx);
-        tls_free(ctx);
-        tls_config_free(config);
         close(clientsd);
- 
-        exit(0);
     }
+    /*
+    if (tls_close(cctx) != 0)
+        err(1, "tls_close: %s", tls_error(cctx));
+    
+    tls_free(cctx);
+    tls_free(ctx);
+    tls_config_free(config);
+    close(clientsd);
+
+    exit(0);
+    */
 }
