@@ -40,7 +40,11 @@
 #include <string.h>
 #include <unistd.h>
 #include <tls.h>
+<<<<<<< HEAD
 #include <netdb.h>
+=======
+#include "../murmur3/murmur3.h"
+>>>>>>> 137aefb8baf82f77c2dc15839ef53e4e99738bec
 
 static void usage()
 {
@@ -54,6 +58,7 @@ static void kidhandler(int signum) {
 	waitpid(WAIT_ANY, NULL, WNOHANG);
 }
 
+<<<<<<< HEAD
 u_long getPort(char *argPort) {
     u_long p;
     char *ep;
@@ -83,6 +88,20 @@ void getIp(char **ip) {
     host_entry = gethostbyname(hostbuffer);
     *ip = inet_ntoa(*((struct in_addr*) host_entry->h_addr_list[0]));
 }
+=======
+unsigned char isWhiteSpace(const char *s)
+{
+    while (*s) {
+        if (!isspace(*s))
+            return 0;
+        s++;
+    }
+    return 1;
+}
+
+void insert_BF(unsigned char *bloomFilter, char* object, int BF_SIZE); //insert object into bloom filter
+int check_BF(unsigned char *bloomFilter, char* object, int BF_SIZE); //check if object is in bloom filter
+>>>>>>> 137aefb8baf82f77c2dc15839ef53e4e99738bec
 
 int main(int argc,  char *argv[])
 {
@@ -243,6 +262,60 @@ int main(int argc,  char *argv[])
     if (sigaction(SIGCHLD, &sa, NULL) == -1)
             err(1, "sigaction failed");
 
+	//Open black list
+	FILE *fptr;
+	if ((fptr= fopen("../../src/inputFiles/blacklistedObjects.txt", "r")) == NULL)
+		err(1, "fopen:");
+	
+	//Create Bloom Filter
+	const int BLOOM_FILTER_SIZE = 7500;
+	unsigned char* bloomFilter;
+	bloomFilter = (unsigned char*) malloc(BLOOM_FILTER_SIZE);
+	for (int i = 0; i < BLOOM_FILTER_SIZE; ++i) {//Initialize bloom filter to all zeros
+		bloomFilter[i] = 0;
+	}
+	const int MAX_OBJLEN = 100;
+	char object[MAX_OBJLEN];
+	int ourProxy = (port % 5); //this is one proxy out of 5, should call ./proxy portnumber with appropriate port numbers
+	
+	//Read black list and only insert objects that hash into our proxy
+	while (fgets(object, sizeof(object), fptr)) {
+		// ignore if whitespace
+		if (isWhiteSpace(object)) {
+			memset(object, '\0', sizeof(object));
+			break;
+		}
+		// null-terminate at last non-whitespace character
+		char *c;
+		c = object + strlen(object) - 1;
+		while (c > object && isspace(*c))
+			c = c - 1;
+		*(c+1) = '\0';
+		
+		char proxyNames[5][10] = { "p1", "p2", "p3", "p4", "p5" };//Assuming 5 proxies
+		int proxyChoice;//proxyChoice will contain the index for the proxy to use for object
+		char namesToHash[5][100];
+		uint32_t hashes[5];
+		uint32_t largestHashVal = 0;
+		int largestHashIndex = 0;
+		for (int i = 0; i < 5; ++i) {
+			strcpy(namesToHash[i], object);
+			strcat(namesToHash[i], proxyNames[i]);//Append proxy name to object name
+			MurmurHash3_x86_32 (namesToHash[i], strlen(namesToHash[i]), 0, hashes + i);//hash the resulting string
+			if (hashes[i] > largestHashVal) {
+				largestHashVal = hashes[i];//keep track of the largest hash
+				largestHashIndex = i;
+			}
+		}
+		proxyChoice = largestHashIndex;
+		
+		if (proxyChoice != ourProxy)//If this object does not hash into our proxy then ignore it
+			continue;
+
+		insert_BF(bloomFilter, object, BLOOM_FILTER_SIZE);
+	}
+	
+	
 	/*
 	 * finally - the main loop.  accept connections and deal with 'em
 	 */
@@ -253,9 +326,6 @@ int main(int argc,  char *argv[])
 		if (clientsd == -1)
 			err(1, "accept failed");
     
-        // TODO: create bloom filter
-
-        // TODO: read blacklisted objects
 		pid = fork();
 		if (pid == -1)
 		     err(1, "fork failed");
@@ -331,4 +401,30 @@ int main(int argc,  char *argv[])
         close(clientsd);
 	}
     return 0;
+}
+
+void insert_BF(unsigned char *bloomFilter, char* object, int BF_SIZE) {
+	uint32_t hashes[5];
+	int indexA, indexB;
+	for (int i = 0; i < 5; ++i) {
+		MurmurHash3_x86_32 (object, strlen(object), i, hashes + i);
+		indexA = (hashes[i] % (BF_SIZE * 8)) / 8;
+		indexB = (hashes[i] % (BF_SIZE * 8)) % 8;
+		bloomFilter[indexA] |= (1 << indexB);
+	}
+	
+}
+
+int check_BF(unsigned char *bloomFilter, char* object, int BF_SIZE) {
+	uint32_t hashes[5];
+	int indexA, indexB;
+	for (int i = 0; i < 5; ++i) {
+		MurmurHash3_x86_32 (object, strlen(object), i, hashes + i);
+		indexA = (hashes[i] % (BF_SIZE * 8)) / 8;
+		indexB = (hashes[i] % (BF_SIZE * 8)) % 8;
+		if ((bloomFilter[indexA] & (1 << indexB)) == 0) {
+			return 0;
+		}
+	}
+	return 1;
 }
