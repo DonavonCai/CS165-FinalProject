@@ -89,7 +89,7 @@ int main(int argc, char *argv[])
     // socket reading and writing
 	struct sockaddr_in server_sa;
     struct sockaddr_in servers[5];
-	char buffer[80];
+	char buffer[500];
 	size_t maxread;
 	int sd;
     ssize_t w, r;
@@ -107,14 +107,14 @@ int main(int argc, char *argv[])
 
 
     // Objects from file
-    const int MAX_OBJLEN = 100;
+    const int MAX_OBJLEN = 500;
     char object[MAX_OBJLEN];
     memset(object, '\0', sizeof(object));
 
     // Hashing
     char proxyNames[5][10] = { "p1", "p2", "p3", "p4", "p5" };//Assuming 5 proxies
     int proxyChoice;//proxyChoice will contain the index for the proxy to use for object
-    char namesToHash[5][100];
+    char namesToHash[5][MAX_OBJLEN];
     uint32_t hashes[5];
     uint32_t largestHashVal = 0;
     int largestHashIndex = 0;
@@ -222,6 +222,8 @@ int main(int argc, char *argv[])
         *(c+1) = '\0';
         
         //determine which proxy to ask for each object using Rendezvous hashing 
+		largestHashVal = 0;
+		largestHashIndex = 0;
         for (i = 0; i < 5; ++i) {
             strcpy(namesToHash[i], object);
             strcat(namesToHash[i], proxyNames[i]);//Append proxy name to object name
