@@ -400,7 +400,7 @@ int main(int argc,  char *argv[])
 	for (i = 0; i < BLOOM_FILTER_SIZE; ++i) {//Initialize bloom filter to all zeros
 		bloomFilter[i] = 0;
 	}
-	const int MAX_OBJLEN = 100;
+	const int MAX_OBJLEN = 500;
 	char object[MAX_OBJLEN];
 	int ourProxy = (port % 5); //this is one proxy out of 5, should call ./proxy portnumber with appropriate port numbers
 	
