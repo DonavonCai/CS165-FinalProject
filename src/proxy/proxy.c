@@ -86,7 +86,7 @@ void addCache(char*, char*);
 // Global variables: ----------------------------------------------------------
 // fds, sockets, buffers:
 struct sockaddr_in sockname, client, server_sa;
-char buf[80];
+char buf[500];
 struct sigaction sa;
 int csd;
 socklen_t clientlen;
@@ -165,7 +165,7 @@ void *clientThread() {
             err(1, "Proxy %d: tls_read(c_ctx): %s", proxyNum, tls_error(c_ctx));
 
         buf[readlen] = '\0';
-        strncpy(objName, buf, strlen(buf));
+        strncpy(objName, buf, strlen(buf) + 1);
 
         // if client says done, exit
         if (strncmp(buf, "__DONE__", 8) == 0) {
@@ -197,12 +197,12 @@ void *clientThread() {
 
         // get from cache if found
         if (cacheIdx > -1) {
-            strncpy(objContent, cache[cacheIdx].content, strlen(cache[cacheIdx].content));
+            strncpy(objContent, cache[cacheIdx].content, strlen(cache[cacheIdx].content) + 1);
             
             // null terminate
             memset(buf, '\0', sizeof(buf));
             // put the content in buffer
-            strncpy(buf, objContent, strlen(objContent));
+            strncpy(buf, objContent, strlen(objContent) + 1);
             
             printf("Got %s from cache: %s\n", objName, objContent);
         }
@@ -220,7 +220,7 @@ void *clientThread() {
                 err(1, "tls_read: %s", tls_error(s_ctx));
 
             // cache the object
-            strncpy(objContent, buf, strlen(buf));
+            strncpy(objContent, buf, strlen(buf) + 1);
             addCache(objName, objContent);
             
             printf("Proxy %d: server reply: %s\n", proxyNum, buf); 
@@ -491,7 +491,7 @@ int cacheIndex(char *requested) {
     char cur[MAX_OBJ_NAME_LEN];
 
     for (j = 0; j < MAX_CACHE_SIZE; j++) {
-        strncpy(cur, cache[j].name, strlen(cache[j].name));
+        strncpy(cur, cache[j].name, strlen(cache[j].name) + 1);
         if (strncmp(requested, cur, sizeof(requested)) == 0) {
             return j;
         }
@@ -505,8 +505,8 @@ void addCache(char *name, char *content) {
         return;
     }
 
-    strncpy(cache[numCacheItems].name, name, strlen(name));
-    strncpy(cache[numCacheItems].content, content, strlen(content));
+    strncpy(cache[numCacheItems].name, name, strlen(name) + 1);
+    strncpy(cache[numCacheItems].content, content, strlen(content) + 1);
     numCacheItems++;
 }
 
