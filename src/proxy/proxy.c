@@ -187,6 +187,7 @@ void *clientThread() {
         if (forbidden) {
             char deny[9] = "__DENY__";
             writelen = tls_write(c_ctx, deny, sizeof(deny));
+            printf("Proxy %d: Object %s forbidden\n", proxyNum, objName);
             continue;
         }
 
@@ -204,7 +205,7 @@ void *clientThread() {
             // put the content in buffer
             strncpy(buf, objContent, strlen(objContent) + 1);
             
-            printf("Got %s from cache: %s\n", objName, objContent);
+            printf("Proxy %d: Got %s from cache: %s\n", proxyNum, objName, objContent);
         }
         else {
             // forward the request to the main server

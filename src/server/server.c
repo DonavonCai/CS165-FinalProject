@@ -110,8 +110,6 @@ int main(int argc,  char *argv[])
     if (config == NULL)
         err(1, "tls_config_new:");
 
-    printf("Created new tls_config.\n");
-
     // set root certificate
     if (tls_config_set_ca_file(config, "../../certificates/root.pem") != 0)
         err(1, "tls_config_set_ca_file:");
@@ -124,20 +122,16 @@ int main(int argc,  char *argv[])
     if (tls_config_set_key_file(config, "../../certificates/server.key") != 0)
         err(1, "tls_config_set_key_file:");
 
-    printf("Set certificates and key.\n");
-
     // server context
     ctx = tls_server();
     if (ctx == NULL)
         err(1, "tls_client:");
 
-    printf("Created server context.\n");
-
     // apply config to context
     if (tls_configure(ctx, config) != 0)
         err(1, "tls_configure:");
 
-    printf("Applied config.\n");
+    printf("TLS configured.\n");
 
 	memset(&sockname, 0, sizeof(sockname));
 	sockname.sin_family = AF_INET;
@@ -224,7 +218,6 @@ int main(int argc,  char *argv[])
 
                 // if proxy says done, exit child process
                 if (strncmp(readbuf, "__DONE__", 8) == 0) {
-                    printf("done!\n");
                     // clean up
                     if (tls_close(cctx) != 0)
                         err(1, "tls_close: %s", tls_error(cctx));
