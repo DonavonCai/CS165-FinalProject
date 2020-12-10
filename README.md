@@ -1,84 +1,36 @@
-## TCP Socket - TLS Structure (ARCH)
-------------------------
+# CS165 Final Project
 
-This repository contains the starter code for the CS165 project/assignment. The directory structure is as follows:
-```diff
-certificates/	// Contains CA and server certificates. And are not required for only socket programming.
-scripts/	// Helper scripts.
-src/		// Client and Server code. Add your code here.
-cmake/		// CMake find script. 
-extern/		// Required third party tools and libraries- LibreSSL & CMake.
-licenses/	// Open source licenses for code used.
-- *Ignore the solution folder. Exist only because it holds some cmake dependencies.
-```
+### Group members:
+* Donavon Cai
+* Naid Ibarra
 
+## Files
+* The proxy application assumes the blacklist is in \<Project Directory\>/src/inputFiles/blacklistedObjects.txt
+* Also in the inputFiles folder, there is a clientObjects.txt which can be used as input for the client.
 
-### Steps
--------------------------
-1. Download and extract the code.
-2. Run the following commands:
-```
-$ cd TCPSocket_iii
-$ source scripts/setup.sh
-$ cd certificates
-$ make
+## Instructions to run
 
-```
-3. The plaintext server and client can be used as follows:
-```
-$ cd TCPSocket_iii
+### Make
+* From the top of the project directory, run ./scripts/setup.sh
+* Also run make in the certificates folder to generate the necessary key and crt files needed to run TLS.
+* If there is a compile error related to pthread make sure that the CMakeLists.txt at the top contains this line:
+ `set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pthread")`
+### Usage
+* Executables must be run from \<Project Directory\>/build/src.
+* server: `./server <port to listen on>`
+* proxy: `./proxy <proxy port> <server port>`
+ 	* One use of this command creates 5 proxies. They will be listening on 5 consecutive ports beginning from \<proxy port\>.
+	* For example, `./proxy 8000 9999` will create 5 proxies listening on ports 8000, 8001, 8002, 8003, 8004 that all connect to a server listening on port 9999.
+* client: `./client <proxy port> <file with object requests>`
+	* The client assumes that \<proxy port\> is the port of the first proxy.
+	* `./client 8000 ../../src/inputFiles/clientObjects.txt` will connect a single client to 5 proxies listening on 8000, 8001, 8002, 8003, 8004, and request the objects listed in clientObjects.txt.
 
-Run the server:
-$ ./build/src/server 9999
+## Output
+* For simplicity, the server returns "content of \<objectName\>" to any request it receives.
+* Each proxy will print its proxy number, and the requested object from client, whether the object was received from the server or cache, and the contents of the object (or that the object is forbidden if it is in the blacklist).
+* The client will print the name of the object, which proxy it will request from, and the reply.
 
-Run the client (in another terminal):
-$ ./build/src/client 127.0.0.1 9999
-```
-
-### How to build and run code
---------------------------
-1. Add your code in `src/client` or `src/server`. 
-2. Go to `build/`
-3. Run `make`
-
-
-### Scripts included
---------------------------
-1. `setup.sh` should be run exactly once after you have downloaded code, and never again. It extracts and builds the dependencies in extern/, and builds and links the code in src/ with LibreSSL.
-2. `reset.sh` reverts the directory to its initial state. It does not touch `src/` or `certificates/`. Run `make clean` in `certificates/` to delete the generated certificates.
-
-
-### FAQ
---------------------------
-1. How to generate CA, server and client certificates?
-
-Go to `certificates/` and run `make` to generate all three certificates. 
-```
-root.pem	// Root CA certificate, the root of trust
-server.crt	// Server's certificate, signed by the root CA using an intermediate CA certificate 
-server.key	// Server's private key
-```
-
-2. The given starter code has only two files, `server/server.c` and `client/client.c`. I want to add another file to implement the proxy. How do I do it?
-
-This project uses CMake to build code, and therefore has a `CMakeLists.txt` file located in `src/`. You can read the file as follows:
-```
-set(CLIENT_SRC	client/client.c)	# The CLIENT_SRC variable holds the names of all files that are a part of client's implementation. This is a client that has only one file in its implementation.
-add_executable(client ${CLIENT_SRC})    # Tells CMake to compile all files listed in CLIENT_SRC into a binary named 'client'
-target_link_libraries(client LibreSSL::TLS) # Asks CMake to link our executable to libtls
-```
-If you want to split your client's code into multiple files, you can modify `src/CMakeLists.txt` as follows:
-```
-set(CLIENT_SRC client/client_1.c client/client_2.c)
-```
-Your code can be split into any number of files as necessary, but remember that they are all compiled to a single runnable binary. 
-If you want to create more binaries, you can copy the three lines explained above and change the variable and file names as necesary.
-
-
-### Useful(!) Resources 
---------------------------
-1.  CRC32 function: https://web.mit.edu/freebsd/head/sys/libkern/crc32.c
-2. RC4 Library: https://man.openbsd.org/RC4.3
-3. Please go over the res shared in the lab sessions, and slack lab channel.
-4. IP Linux Implementation: https://man7.org/linux/man-pages/man7/ip.7.html
-5. C Library stdlib.h: https://www.tutorialspoint.com/c_standard_library/stdlib_h.html
+## Implementation
+* The server does not look for real files to respond to a request, and instead returns "content of \<objectName\>" to any request it receives.
+* The proxy uses fork() to create 5 processes to simulate 5 proxies running at the same time, and use pthread() to handle multiple clients, in order to implement the cache.
+	* This ensures 5 proxies will their own cache, which is shared between client threads, so that an object cached from one client's request can be given to another client.
